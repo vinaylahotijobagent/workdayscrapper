@@ -1,5 +1,8 @@
 name: Workday Scraper
 
+permissions:
+  contents: write
+
 on:
   schedule:
     - cron: '0 */6 * * *'  # every 6 hours
@@ -27,10 +30,10 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python scraper.py
 
-      - name: Commit Updated State
+      - name: Commit Updated Database
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "actions@github.com"
-          git add jobs.json
-          git commit -m "Update jobs state" || echo "No changes"
+          git add jobs.db
+          git commit -m "Update jobs database" || echo "No changes"
           git push
