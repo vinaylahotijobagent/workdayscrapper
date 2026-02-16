@@ -1,9 +1,11 @@
 import requests
 import os
 import json
+import time
 
-BASE_URL = "https://www.wellsfargojobs.com/"
-LANG = "en-US"
+# Workday API endpoint
+WORKDAY_URL = "https://wd1.myworkdaysite.com/wday/cxs/wf/WellsFargoJobs/jobs"
+
 LOCATION = os.getenv("JOB_LOCATION", "Hyderabad")
 
 KEYWORDS = [
@@ -26,11 +28,25 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 STATE_FILE = "jobs.json"
 
 
-def fetch_jobs(keyword, page=1):
-    url = f"{BASE_URL}{LANG}/search?keyword={keyword}&location={LOCATION}&page={page}"
-    r = requests.get(url)
-    r.raise_for_status()
-    return r.json()
+HEADERS = {
+    "Content-Type": "application/json",
+    "User-Agent": "Mozilla/5.0"
+}
+
+
+def fetch_jobs(keyword, offset=0):
+    payload = {
+        "limit": 20,
+        "offset": offset,
+        "searchText": keyword,
+        "appliedFacets": {
+            "locations": [LOCATION]
+        }
+    }
+
+    response = requests.post(WORKDAY_URL, headers=HEADERS, json=payload, timeout=20)
+    response.raise_for_status()
+    return response.json()
 
 
 def get_all_jobs():
@@ -38,24 +54,24 @@ def get_all_jobs():
     seen = set()
 
     for keyword in KEYWORDS:
-        page = 1
-        first = fetch_jobs(keyword, page)
+        offset = 0
 
-        total_pages = first["searchResults"]["totalPages"]
-        jobs = first["searchResults"]["jobs"]
+        while True:
+            data = fetch_jobs(keyword, offset)
+            jobs = data.get("jobPostings", [])
 
-        for job in jobs:
-            if job["externalPath"] not in seen:
-                all_jobs.append(job)
-                seen.add(job["externalPath"])
+            if not jobs:
+                break
 
-        while page < total_pages:
-            page += 1
-            data = fetch_jobs(keyword, page)
-            for job in data["searchResults"]["jobs"]:
-                if job["externalPath"] not in seen:
+            for job in jobs:
+                job_id = job.get("externalPath")
+
+                if job_id and job_id not in seen:
                     all_jobs.append(job)
-                    seen.add(job["externalPath"])
+                    seen.add(job_id)
+
+            offset += 20
+            time.sleep(0.5)  # small delay to avoid rate limits
 
     return all_jobs
 
@@ -73,18 +89,23 @@ def save_current(jobs):
 
 
 def send_telegram(message):
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": message,
         "parse_mode": "HTML"
     }
+
     requests.post(url, json=payload)
 
 
 def detect_new_jobs(old_jobs, new_jobs):
-    old_ids = {job["externalPath"] for job in old_jobs}
-    return [job for job in new_jobs if job["externalPath"] not in old_ids]
+    old_ids = {job.get("externalPath") for job in old_jobs}
+    return [job for job in new_jobs if job.get("externalPath") not in old_ids]
 
 
 def main():
@@ -95,15 +116,20 @@ def main():
 
     if new_entries:
         for job in new_entries[:5]:
-            msg = f"""
+            title = job.get("title", "N/A")
+            location = ", ".join(job.get("locationsText", []))
+            posted = job.get("postedOn", "N/A")
+            apply_url = f"https://wd1.myworkdaysite.com{job.get('externalPath')}"
+
+            message = f"""
 <b>New Wells Fargo Job (Hyderabad)</b>
 
-Title: {job['title']}
-Location: {job['locations']}
-Posted: {job['postedDate']}
-Apply: https://www.wellsfargojobs.com{job['externalPath']}
+Title: {title}
+Location: {location}
+Posted: {posted}
+Apply: {apply_url}
 """
-            send_telegram(msg)
+            send_telegram(message)
 
     save_current(new_jobs)
 
