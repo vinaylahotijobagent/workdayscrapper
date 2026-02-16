@@ -1,18 +1,17 @@
 import requests
 import os
 import json
-import time
 
 WORKDAY_URL = "https://wd1.myworkdaysite.com/wday/cxs/wf/WellsFargoJobs/jobs"
 
 LOCATION_FILTER = "Hyderabad"
-MAX_PAGES = 2          # Only check first 2 pages (latest jobs)
-MAX_DAYS = 3           # Only jobs posted in last 3 days
+MAX_PAGES = 2
+MAX_DAYS = 5
 
 KEYWORDS = [
-    "Data Analyst",
-    "Business Intelligence",
-    "Data Engineer"
+    "Data",
+    "Analytics",
+    "Business Intelligence"
 ]
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -33,9 +32,9 @@ def fetch_jobs(keyword, offset=0):
         "searchText": keyword
     }
 
-    response = requests.post(WORKDAY_URL, headers=HEADERS, json=payload, timeout=20)
-    response.raise_for_status()
-    return response.json()
+    r = requests.post(WORKDAY_URL, headers=HEADERS, json=payload)
+    r.raise_for_status()
+    return r.json()
 
 
 def is_recent(posted_text):
@@ -49,6 +48,8 @@ def is_recent(posted_text):
 
     if "day" in text:
         try:
+            if "+" in text:
+                return False
             days = int(text.split()[1])
             return days <= MAX_DAYS
         except:
@@ -74,8 +75,7 @@ def get_all_jobs():
 
             for job in jobs:
                 job_id = job.get("externalPath")
-                locations = job.get("locationsText", [])
-                location_text = " ".join(locations)
+                location_text = job.get("locationsText", "")
                 posted = job.get("postedOn", "")
 
                 if (
@@ -89,8 +89,6 @@ def get_all_jobs():
 
             offset += 20
             page_count += 1
-
-        print(f"Checked keyword: {keyword}")
 
     return all_jobs
 
@@ -112,7 +110,6 @@ def send_telegram(message):
         return
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": message,
@@ -128,18 +125,21 @@ def detect_new_jobs(old_jobs, new_jobs):
 
 
 def main():
-    print("Fetching latest Hyderabad jobs...")
+    print("Checking latest Hyderabad data jobs...")
+
     new_jobs = get_all_jobs()
     old_jobs = load_previous()
+
+    print(f"Filtered jobs found: {len(new_jobs)}")
 
     new_entries = detect_new_jobs(old_jobs, new_jobs)
 
     if new_entries:
-        print(f"Found {len(new_entries)} new jobs")
-        for job in new_entries[:5]:
+        print(f"New jobs detected: {len(new_entries)}")
+        for job in new_entries:
             title = job.get("title", "N/A")
-            location = ", ".join(job.get("locationsText", []))
-            posted = job.get("postedOn", "N/A")
+            location = job.get("locationsText", "")
+            posted = job.get("postedOn", "")
             apply_url = f"https://wd1.myworkdaysite.com{job.get('externalPath')}"
 
             message = f"""
