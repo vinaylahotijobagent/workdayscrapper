@@ -3,10 +3,9 @@ import os
 import json
 import time
 
-# Workday API endpoint
 WORKDAY_URL = "https://wd1.myworkdaysite.com/wday/cxs/wf/WellsFargoJobs/jobs"
 
-LOCATION = os.getenv("JOB_LOCATION", "Hyderabad")
+LOCATION_FILTER = "Hyderabad"
 
 KEYWORDS = [
     "Data Analyst",
@@ -27,7 +26,6 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 STATE_FILE = "jobs.json"
 
-
 HEADERS = {
     "Content-Type": "application/json",
     "User-Agent": "Mozilla/5.0"
@@ -38,10 +36,7 @@ def fetch_jobs(keyword, offset=0):
     payload = {
         "limit": 20,
         "offset": offset,
-        "searchText": keyword,
-        "appliedFacets": {
-            "locations": [LOCATION]
-        }
+        "searchText": keyword
     }
 
     response = requests.post(WORKDAY_URL, headers=HEADERS, json=payload, timeout=20)
@@ -66,12 +61,17 @@ def get_all_jobs():
             for job in jobs:
                 job_id = job.get("externalPath")
 
-                if job_id and job_id not in seen:
-                    all_jobs.append(job)
-                    seen.add(job_id)
+                # Filter Hyderabad manually
+                locations = job.get("locationsText", [])
+                location_text = " ".join(locations)
+
+                if LOCATION_FILTER.lower() in location_text.lower():
+                    if job_id and job_id not in seen:
+                        all_jobs.append(job)
+                        seen.add(job_id)
 
             offset += 20
-            time.sleep(0.5)  # small delay to avoid rate limits
+            time.sleep(0.5)
 
     return all_jobs
 
