@@ -1,12 +1,13 @@
 import requests
 import os
-import json
+import sqlite3
+from datetime import datetime
 
 WORKDAY_URL = "https://wd1.myworkdaysite.com/wday/cxs/wf/WellsFargoJobs/jobs"
 
 LOCATION_FILTER = "Hyderabad"
 MAX_PAGES = 2
-MAX_DAYS = 5
+MAX_DAYS = 7
 
 KEYWORDS = [
     "Data",
@@ -17,13 +18,62 @@ KEYWORDS = [
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-STATE_FILE = "jobs.json"
+DB_FILE = "jobs.db"
 
 HEADERS = {
     "Content-Type": "application/json",
     "User-Agent": "Mozilla/5.0"
 }
 
+
+# ---------------- DATABASE ---------------- #
+
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS jobs (
+            job_id TEXT PRIMARY KEY,
+            title TEXT,
+            location TEXT,
+            posted_on TEXT,
+            apply_url TEXT,
+            first_seen TEXT
+        )
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+def insert_job(job):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("""
+            INSERT INTO jobs (job_id, title, location, posted_on, apply_url, first_seen)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            job["externalPath"],
+            job["title"],
+            job["locationsText"],
+            job["postedOn"],
+            f"https://wd1.myworkdaysite.com{job['externalPath']}",
+            datetime.utcnow().isoformat()
+        ))
+
+        conn.commit()
+        conn.close()
+        return True  # New job inserted
+
+    except sqlite3.IntegrityError:
+        conn.close()
+        return False  # Duplicate
+
+
+# ---------------- WORKDAY ---------------- #
 
 def fetch_jobs(keyword, offset=0):
     payload = {
@@ -58,9 +108,28 @@ def is_recent(posted_text):
     return False
 
 
-def get_all_jobs():
-    all_jobs = []
-    seen = set()
+def send_telegram(message):
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML"
+    }
+
+    requests.post(url, json=payload)
+
+
+# ---------------- MAIN ---------------- #
+
+def main():
+    print("Initializing database...")
+    init_db()
+
+    print("Checking latest Hyderabad jobs...")
 
     for keyword in KEYWORDS:
         offset = 0
@@ -74,87 +143,30 @@ def get_all_jobs():
                 break
 
             for job in jobs:
-                job_id = job.get("externalPath")
-                location_text = job.get("locationsText", "")
+                location = job.get("locationsText", "")
                 posted = job.get("postedOn", "")
 
-                if (
-                    job_id
-                    and job_id not in seen
-                    and LOCATION_FILTER.lower() in location_text.lower()
-                    and is_recent(posted)
-                ):
-                    all_jobs.append(job)
-                    seen.add(job_id)
+                if LOCATION_FILTER.lower() in location.lower() and is_recent(posted):
+
+                    is_new = insert_job(job)
+
+                    if is_new:
+                        print(f"New job found: {job['title']}")
+
+                        message = f"""
+<b>New Wells Fargo Job (Hyderabad)</b>
+
+Title: {job['title']}
+Location: {location}
+Posted: {posted}
+Apply: https://wd1.myworkdaysite.com{job['externalPath']}
+"""
+                        send_telegram(message)
 
             offset += 20
             page_count += 1
 
-    return all_jobs
-
-
-def load_previous():
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, "r") as f:
-            return json.load(f)
-    return []
-
-
-def save_current(jobs):
-    with open(STATE_FILE, "w") as f:
-        json.dump(jobs, f, indent=2)
-
-
-def send_telegram(message):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        return
-
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "HTML"
-    }
-
-    requests.post(url, json=payload)
-
-
-def detect_new_jobs(old_jobs, new_jobs):
-    old_ids = {job.get("externalPath") for job in old_jobs}
-    return [job for job in new_jobs if job.get("externalPath") not in old_ids]
-
-
-def main():
-    print("Checking latest Hyderabad data jobs...")
-
-    new_jobs = get_all_jobs()
-    old_jobs = load_previous()
-
-    print(f"Filtered jobs found: {len(new_jobs)}")
-
-    new_entries = detect_new_jobs(old_jobs, new_jobs)
-
-    if new_entries:
-        print(f"New jobs detected: {len(new_entries)}")
-        for job in new_entries:
-            title = job.get("title", "N/A")
-            location = job.get("locationsText", "")
-            posted = job.get("postedOn", "")
-            apply_url = f"https://wd1.myworkdaysite.com{job.get('externalPath')}"
-
-            message = f"""
-<b>New Wells Fargo Job (Hyderabad)</b>
-
-Title: {title}
-Location: {location}
-Posted: {posted}
-Apply: {apply_url}
-"""
-            send_telegram(message)
-    else:
-        print("No new jobs found.")
-
-    save_current(new_jobs)
+    print("Done.")
 
 
 if __name__ == "__main__":
