@@ -6,19 +6,13 @@ import time
 WORKDAY_URL = "https://wd1.myworkdaysite.com/wday/cxs/wf/WellsFargoJobs/jobs"
 
 LOCATION_FILTER = "Hyderabad"
+MAX_PAGES = 2          # Only check first 2 pages (latest jobs)
+MAX_DAYS = 3           # Only jobs posted in last 3 days
 
 KEYWORDS = [
     "Data Analyst",
     "Business Intelligence",
-    "BI Analyst",
-    "Analytics",
-    "Reporting",
-    "Power BI",
-    "SQL",
-    "Databricks",
-    "Azure",
-    "Data Engineer",
-    "ETL"
+    "Data Engineer"
 ]
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -44,14 +38,34 @@ def fetch_jobs(keyword, offset=0):
     return response.json()
 
 
+def is_recent(posted_text):
+    if not posted_text:
+        return False
+
+    text = posted_text.lower()
+
+    if "today" in text or "yesterday" in text:
+        return True
+
+    if "day" in text:
+        try:
+            days = int(text.split()[1])
+            return days <= MAX_DAYS
+        except:
+            return False
+
+    return False
+
+
 def get_all_jobs():
     all_jobs = []
     seen = set()
 
     for keyword in KEYWORDS:
         offset = 0
+        page_count = 0
 
-        while True:
+        while page_count < MAX_PAGES:
             data = fetch_jobs(keyword, offset)
             jobs = data.get("jobPostings", [])
 
@@ -60,18 +74,23 @@ def get_all_jobs():
 
             for job in jobs:
                 job_id = job.get("externalPath")
-
-                # Filter Hyderabad manually
                 locations = job.get("locationsText", [])
                 location_text = " ".join(locations)
+                posted = job.get("postedOn", "")
 
-                if LOCATION_FILTER.lower() in location_text.lower():
-                    if job_id and job_id not in seen:
-                        all_jobs.append(job)
-                        seen.add(job_id)
+                if (
+                    job_id
+                    and job_id not in seen
+                    and LOCATION_FILTER.lower() in location_text.lower()
+                    and is_recent(posted)
+                ):
+                    all_jobs.append(job)
+                    seen.add(job_id)
 
             offset += 20
-            time.sleep(0.5)
+            page_count += 1
+
+        print(f"Checked keyword: {keyword}")
 
     return all_jobs
 
@@ -109,12 +128,14 @@ def detect_new_jobs(old_jobs, new_jobs):
 
 
 def main():
+    print("Fetching latest Hyderabad jobs...")
     new_jobs = get_all_jobs()
     old_jobs = load_previous()
 
     new_entries = detect_new_jobs(old_jobs, new_jobs)
 
     if new_entries:
+        print(f"Found {len(new_entries)} new jobs")
         for job in new_entries[:5]:
             title = job.get("title", "N/A")
             location = ", ".join(job.get("locationsText", []))
@@ -130,6 +151,8 @@ Posted: {posted}
 Apply: {apply_url}
 """
             send_telegram(message)
+    else:
+        print("No new jobs found.")
 
     save_current(new_jobs)
 
